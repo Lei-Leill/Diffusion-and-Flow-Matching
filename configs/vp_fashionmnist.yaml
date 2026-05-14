@@ -1,0 +1,22 @@
+# configs/vp_fashionmnist.yaml
+# Hyperparameters for Part 5 VP score model training.
+# Override any value on the CLI: python scripts/train_vp.py --beta_max 10.0
+
+model:
+  in_channels: 1
+  base_channels: 64
+
+sde:
+  beta_min: 0.01
+  beta_max: 5.0      # try also 10.0
+  T: 1000
+
+training:
+  epochs: 50
+  lr: 1.0e-4
+  batch_size: 128
+  patience: 10       # early stopping; 0 = disabled
+
+paths:
+  save_dir: runs/vp
+  data_dir: data

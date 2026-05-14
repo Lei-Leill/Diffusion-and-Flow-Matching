@@ -1,0 +1,21 @@
+# configs/rectflow_fashionmnist.yaml
+# Hyperparameters for Part 6 Rectified Flow training.
+
+model:
+  in_channels: 1
+  base_channels: 64
+
+training:
+  epochs: 50
+  lr: 1.0e-4
+  batch_size: 128
+
+reflow:
+  n_pairs: 50000
+  euler_steps: 100    # steps used to generate reflow pairs
+  retrain_epochs: 20
+
+paths:
+  save_dir: runs/rectflow
+  reflow_save_dir: runs/rectflow_reflow
+  data_dir: data
