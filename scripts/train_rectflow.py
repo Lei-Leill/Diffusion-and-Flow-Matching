@@ -28,6 +28,7 @@ from diffusion.rectflow import RectifiedFlow
 
 def get_args():
     p = argparse.ArgumentParser()
+    p.add_argument("--config",         type=str,   default=None)
     p.add_argument("--epochs",         type=int,   default=50)
     p.add_argument("--lr",             type=float, default=1e-4)
     p.add_argument("--batch_size",     type=int,   default=128)
@@ -41,7 +42,25 @@ def get_args():
     p.add_argument("--n_reflow_pairs", type=int,   default=50_000)
     p.add_argument("--reflow_steps",   type=int,   default=100,
                    help="Euler steps used to generate reflow pairs.")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.config is not None:
+        import yaml
+
+        with open(args.config, "r") as f:
+            cfg = yaml.safe_load(f)
+        train_cfg = cfg.get("training", {})
+        reflow_cfg = cfg.get("reflow", {})
+        path_cfg = cfg.get("paths", {})
+        args.epochs = train_cfg.get("epochs", args.epochs)
+        args.lr = train_cfg.get("lr", args.lr)
+        args.batch_size = train_cfg.get("batch_size", args.batch_size)
+        args.n_reflow_pairs = reflow_cfg.get("n_pairs", args.n_reflow_pairs)
+        args.reflow_steps = reflow_cfg.get("euler_steps", args.reflow_steps)
+        args.save_dir = path_cfg.get("save_dir", args.save_dir)
+        if args.reflow:
+            args.epochs = reflow_cfg.get("retrain_epochs", args.epochs)
+            args.save_dir = path_cfg.get("reflow_save_dir", args.save_dir)
+    return args
 
 
 def build_dataloader(batch_size: int):

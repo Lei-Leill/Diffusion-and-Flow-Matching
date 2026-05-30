@@ -88,12 +88,26 @@ def get_args():
     return p.parse_args()
 
 
-def load_vp_model(checkpoint: str, device) -> tuple[VPSDE, UNet]:
-    raise NotImplementedError("Fill in VPSDE and UNet loading.")
+def load_vp_model(
+    checkpoint: str,
+    device,
+    beta_min: float = 0.01,
+    beta_max: float = 5.0,
+    T: int = 1000,
+) -> tuple[VPSDE, UNet]:
+    sde = VPSDE(beta_min=beta_min, beta_max=beta_max, T=T)
+    model = UNet(in_channels=1, base_channels=64).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device))
+    model.eval()
+    return sde, model
 
 
 def load_rf_model(checkpoint: str, device) -> tuple[RectifiedFlow, UNet]:
-    raise NotImplementedError("Fill in RectifiedFlow and UNet loading.")
+    flow = RectifiedFlow()
+    model = UNet(in_channels=1, base_channels=64).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device))
+    model.eval()
+    return flow, model
 
 
 def main():
@@ -104,21 +118,64 @@ def main():
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     if args.method == "em":
-        # TODO (5.C.iii)
-        raise NotImplementedError
+        checkpoint = args.checkpoint or args.vp_checkpoint
+        if checkpoint is None:
+            raise ValueError("--checkpoint is required for --method em")
+        sde, model = load_vp_model(checkpoint, device, args.beta_min, args.beta_max, args.T)
+        samples = sde.euler_maruyama(model, shape, num_steps=args.num_steps, device=device)
+        save_grid(samples, args.out, title=f"VP Euler-Maruyama ({args.num_steps} steps)")
 
     elif args.method == "pc":
-        # TODO (5.C.iv)
-        raise NotImplementedError
+        checkpoint = args.checkpoint or args.vp_checkpoint
+        if checkpoint is None:
+            raise ValueError("--checkpoint is required for --method pc")
+        sde, model = load_vp_model(checkpoint, device, args.beta_min, args.beta_max, args.T)
+        samples = sde.predictor_corrector(
+            model,
+            shape,
+            num_steps=args.num_steps,
+            n_corrector=args.n_corrector,
+            snr=args.snr,
+            device=device,
+        )
+        save_grid(samples, args.out, title=f"VP PC ({args.num_steps} steps, {args.n_corrector} corrector)")
 
     elif args.method == "rectflow":
-        # TODO (6.B / 6.C)
-        raise NotImplementedError
+        checkpoint = args.checkpoint or args.rf_checkpoint or args.reflow_checkpoint
+        if checkpoint is None:
+            raise ValueError("--checkpoint is required for --method rectflow")
+        flow, model = load_rf_model(checkpoint, device)
+        samples = flow.euler_sample(model, shape, num_steps=args.num_steps, device=device)
+        save_grid(samples, args.out, title=f"Rectified Flow ({args.num_steps} steps)")
 
     elif args.method == "all":
-        # TODO (6.D) — generate 8 fixed-seed samples from each method and
-        # arrange them in a 4×8 grid as specified in Problem 6.D.
-        raise NotImplementedError
+        if args.vp_checkpoint is None or args.rf_checkpoint is None or args.reflow_checkpoint is None:
+            raise ValueError("--vp_checkpoint, --rf_checkpoint, and --reflow_checkpoint are required")
+        shape8 = (8, 1, 28, 28)
+        sde, vp_model = load_vp_model(
+            args.vp_checkpoint, device, args.beta_min, args.beta_max, args.T
+        )
+        flow, rf_model = load_rf_model(args.rf_checkpoint, device)
+        reflow, reflow_model = load_rf_model(args.reflow_checkpoint, device)
+
+        torch.manual_seed(args.seed)
+        em = sde.euler_maruyama(vp_model, shape8, num_steps=args.num_steps, device=device)
+        torch.manual_seed(args.seed)
+        pc = sde.predictor_corrector(
+            vp_model,
+            shape8,
+            num_steps=args.num_steps,
+            n_corrector=args.n_corrector,
+            snr=args.snr,
+            device=device,
+        )
+        torch.manual_seed(args.seed)
+        rf = flow.euler_sample(rf_model, shape8, num_steps=args.num_steps, device=device)
+        torch.manual_seed(args.seed)
+        rf_one = reflow.euler_sample(reflow_model, shape8, num_steps=1, device=device)
+
+        samples = torch.cat([em, pc, rf, rf_one], dim=0)
+        save_grid(samples, args.out, nrow=8, title="EM / PC / Rectified Flow / One-step Reflow")
 
 
 if __name__ == "__main__":

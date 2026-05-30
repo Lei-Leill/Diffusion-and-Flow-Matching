@@ -48,9 +48,11 @@ class RectifiedFlow:
             (x_t, x0, vel): interpolated point, noise used, and regression
                             target velocity (x1 - x0), all shape (B, *).
         """
-        # TODO (6.A) — sample x0 ~ N(0,I), form x_t, compute vel
-        # Hint: broadcast t to match x1's spatial dimensions before multiplying.
-        raise NotImplementedError
+        x0 = torch.randn_like(x1)
+        t_view = t.reshape(t.shape[0], *([1] * (x1.ndim - 1)))
+        x_t = (1.0 - t_view) * x0 + t_view * x1
+        vel = x1 - x0
+        return x_t, x0, vel
 
     def loss(self, v_theta: nn.Module, x1: Tensor) -> Tensor:
         """Rectified Flow training loss (RF objective).
@@ -65,8 +67,9 @@ class RectifiedFlow:
         Returns:
             Scalar loss.
         """
-        # TODO (6.A)
-        raise NotImplementedError
+        t = torch.rand(x1.shape[0], device=x1.device)
+        x_t, _, vel = self.forward_process(x1, t)
+        return F.mse_loss(v_theta(x_t, t), vel)
 
     # ------------------------------------------------------------------
     # 6.B  Euler ODE sampler
@@ -96,8 +99,13 @@ class RectifiedFlow:
         Returns:
             Generated samples X_1, shape (B, C, H, W).
         """
-        # TODO (6.B)
-        raise NotImplementedError
+        device = torch.device(device)
+        x = torch.randn(shape, device=device)
+        dt = 1.0 / num_steps
+        for i in range(num_steps):
+            t = torch.full((shape[0],), i * dt, device=device)
+            x = x + dt * v_theta(x, t)
+        return x.clamp(-1, 1)
 
     # ------------------------------------------------------------------
     # 6.C  Reflow  (data generation only — retraining uses loss() above)
@@ -130,5 +138,20 @@ class RectifiedFlow:
         Returns:
             (x0_all, x1_all): tensors of shape (n_pairs, C, H, W) on CPU.
         """
-        # TODO (6.C)
-        raise NotImplementedError
+        device = torch.device(device)
+        x0_chunks: list[Tensor] = []
+        x1_chunks: list[Tensor] = []
+        produced = 0
+        while produced < n_pairs:
+            bsz = min(batch_size, n_pairs - produced)
+            shape = (bsz, *image_shape)
+            x0 = torch.randn(shape, device=device)
+            x = x0.clone()
+            dt = 1.0 / num_steps
+            for i in range(num_steps):
+                t = torch.full((bsz,), i * dt, device=device)
+                x = x + dt * v_theta(x, t)
+            x0_chunks.append(x0.cpu())
+            x1_chunks.append(x.clamp(-1, 1).cpu())
+            produced += bsz
+        return torch.cat(x0_chunks, dim=0), torch.cat(x1_chunks, dim=0)

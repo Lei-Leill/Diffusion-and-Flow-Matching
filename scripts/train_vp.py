@@ -37,7 +37,24 @@ def get_args():
     # Early stopping
     p.add_argument("--patience",  type=int,   default=10,
                    help="Stop if val loss does not improve for this many epochs. 0 = disabled.")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.config is not None:
+        import yaml
+
+        with open(args.config, "r") as f:
+            cfg = yaml.safe_load(f)
+        sde_cfg = cfg.get("sde", {})
+        train_cfg = cfg.get("training", {})
+        path_cfg = cfg.get("paths", {})
+        args.beta_min = sde_cfg.get("beta_min", args.beta_min)
+        args.beta_max = sde_cfg.get("beta_max", args.beta_max)
+        args.T = sde_cfg.get("T", args.T)
+        args.epochs = train_cfg.get("epochs", args.epochs)
+        args.lr = train_cfg.get("lr", args.lr)
+        args.batch_size = train_cfg.get("batch_size", args.batch_size)
+        args.patience = train_cfg.get("patience", args.patience)
+        args.save_dir = path_cfg.get("save_dir", args.save_dir)
+    return args
 
 
 def build_dataloader(batch_size: int):
@@ -67,10 +84,11 @@ def score_loss(sde: VPSDE, model: torch.nn.Module, x0: torch.Tensor, device) -> 
     Returns:
         Scalar loss.
     """
-    # TODO (5.A.iii / 5.B setup) — implement the DSM loss.
-    # Hint: sample t ~ Uniform(0,1), call sde.marginal(), call model(x_t, t),
-    #       and compute the weighted MSE as in Song21 Eq. (7).
-    raise NotImplementedError
+    t = torch.rand(x0.shape[0], device=device) * (1.0 - 1e-5) + 1e-5
+    x_t, eps = sde.marginal(x0, t)
+    score = model(x_t, t)
+    sigma = sde.sigma(t).reshape(t.shape[0], *([1] * (x0.ndim - 1)))
+    return F.mse_loss(sigma * score, -eps)
 
 
 def main():

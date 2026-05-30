@@ -51,8 +51,7 @@ class VPSDE:
 
         Reference: Eq. (32) of Song21.
         """
-        # TODO (5.A.ii)
-        raise NotImplementedError
+        return self.beta_min + (self.beta_max - self.beta_min) * t
 
     def c(self, t: Tensor) -> Tensor:
         """c(t) = exp(-½ ∫_0^t β(s) ds) — the signal decay factor.
@@ -68,8 +67,8 @@ class VPSDE:
 
         Reference: Eq. (33) of Song21.
         """
-        # TODO (5.A.ii)
-        raise NotImplementedError
+        integral = self.beta_min * t + 0.5 * (self.beta_max - self.beta_min) * t.square()
+        return torch.exp(-0.5 * integral)
 
     def sigma(self, t: Tensor) -> Tensor:
         """σ(t) = √(1 - c(t)²) — the noise standard deviation.
@@ -80,8 +79,7 @@ class VPSDE:
         Returns:
             σ(t), same shape as t.
         """
-        # TODO (5.A.iii)
-        raise NotImplementedError
+        return torch.sqrt(torch.clamp(1.0 - self.c(t).square(), min=0.0))
 
     def drift(self, x: Tensor, t: Tensor) -> Tensor:
         """Drift coefficient  f(x, t) = -½ β(t) x.
@@ -93,8 +91,8 @@ class VPSDE:
         Returns:
             Drift f(x, t), same shape as x.
         """
-        # TODO (5.A.i)
-        raise NotImplementedError
+        beta_t = self.beta(t).reshape(t.shape[0], *([1] * (x.ndim - 1)))
+        return -0.5 * beta_t * x
 
     def diffusion(self, t: Tensor) -> Tensor:
         """Diffusion coefficient  g(t) = √β(t).
@@ -105,8 +103,7 @@ class VPSDE:
         Returns:
             g(t), same shape as t.
         """
-        # TODO (5.A.i)
-        raise NotImplementedError
+        return torch.sqrt(self.beta(t))
 
     def marginal(self, x0: Tensor, t: Tensor) -> tuple[Tensor, Tensor]:
         """Sample from the forward marginal  q(x_t | x_0).
@@ -121,8 +118,11 @@ class VPSDE:
         Returns:
             (x_t, eps): noised sample and the noise used, both shape (B, *).
         """
-        # TODO (5.A.iii)
-        raise NotImplementedError
+        view_shape = (t.shape[0],) + (1,) * (x0.ndim - 1)
+        c_t = self.c(t).reshape(view_shape)
+        sigma_t = self.sigma(t).reshape(view_shape)
+        eps = torch.randn_like(x0)
+        return c_t * x0 + sigma_t * eps, eps
 
     # ------------------------------------------------------------------
     # 5.B  Samplers
@@ -153,10 +153,26 @@ class VPSDE:
             Generated samples, shape (B, C, H, W), values in [-1, 1].
         """
         num_steps = num_steps or self.T
-        # TODO (5.B.i) — implement the EM sampler
-        # Hint: time runs from t=1 down to t≈0 in steps of Δt = 1/num_steps.
-        #       At t=1, initialise x ~ N(0, σ(1)² I).
-        raise NotImplementedError
+        device = torch.device(device)
+        batch = shape[0]
+        dt = 1.0 / num_steps
+        t1 = torch.ones(batch, device=device)
+        x = self.sigma(t1).reshape(batch, *([1] * (len(shape) - 1))) * torch.randn(
+            shape, device=device
+        )
+
+        for i in range(num_steps):
+            t_scalar = 1.0 - i * dt
+            t = torch.full((batch,), t_scalar, device=device)
+            beta_t = self.beta(t).reshape(batch, *([1] * (x.ndim - 1)))
+            score = score_model(x, t)
+            drift = 0.5 * beta_t * x + beta_t * score
+            if i < num_steps - 1:
+                noise = torch.randn_like(x)
+                x = x + drift * dt + torch.sqrt(beta_t * dt) * noise
+            else:
+                x = x + drift * dt
+        return x.clamp(-1, 1)
 
     @torch.no_grad()
     def predictor_corrector(
@@ -185,8 +201,35 @@ class VPSDE:
             Generated samples, shape (B, C, H, W), values in [-1, 1].
         """
         num_steps = num_steps or self.T
-        # TODO (5.B.ii)
-        raise NotImplementedError
+        device = torch.device(device)
+        batch = shape[0]
+        dt = 1.0 / num_steps
+        t1 = torch.ones(batch, device=device)
+        x = self.sigma(t1).reshape(batch, *([1] * (len(shape) - 1))) * torch.randn(
+            shape, device=device
+        )
+
+        for i in range(num_steps):
+            t_scalar = 1.0 - i * dt
+            t = torch.full((batch,), t_scalar, device=device)
+
+            for _ in range(n_corrector):
+                score = score_model(x, t)
+                noise = torch.randn_like(x)
+                grad_norm = torch.norm(score.reshape(batch, -1), dim=-1).mean()
+                noise_norm = torch.norm(noise.reshape(batch, -1), dim=-1).mean()
+                step_size = 2.0 * (snr * noise_norm / (grad_norm + 1e-12)).square()
+                x = x + step_size * score + torch.sqrt(2.0 * step_size) * noise
+
+            beta_t = self.beta(t).reshape(batch, *([1] * (x.ndim - 1)))
+            score = score_model(x, t)
+            drift = 0.5 * beta_t * x + beta_t * score
+            if i < num_steps - 1:
+                noise = torch.randn_like(x)
+                x = x + drift * dt + torch.sqrt(beta_t * dt) * noise
+            else:
+                x = x + drift * dt
+        return x.clamp(-1, 1)
 
     # ------------------------------------------------------------------
     # 5.D  Inverse problems (EC)
@@ -223,5 +266,29 @@ class VPSDE:
             Reconstructed images, shape (B, C, H, W).
         """
         num_steps = num_steps or self.T
-        # TODO (EC 5.D)
-        raise NotImplementedError
+        device = torch.device(device)
+        corrupted = corrupted.to(device)
+        mask = mask.to(device)
+        batch = corrupted.shape[0]
+        dt = 1.0 / num_steps
+        t1 = torch.ones(batch, device=device)
+        x = self.sigma(t1).reshape(batch, *([1] * (corrupted.ndim - 1))) * torch.randn_like(
+            corrupted
+        )
+
+        for i in range(num_steps):
+            t_scalar = 1.0 - i * dt
+            t = torch.full((batch,), t_scalar, device=device)
+            known_t, _ = self.marginal(corrupted, t)
+            x = mask * known_t + (1.0 - mask) * x
+
+            beta_t = self.beta(t).reshape(batch, *([1] * (x.ndim - 1)))
+            score = score_model(x, t)
+            drift = 0.5 * beta_t * x + beta_t * score
+            if i < num_steps - 1:
+                noise = torch.randn_like(x)
+                x = x + drift * dt + torch.sqrt(beta_t * dt) * noise
+            else:
+                x = x + drift * dt
+
+        return (mask * corrupted + (1.0 - mask) * x).clamp(-1, 1)
